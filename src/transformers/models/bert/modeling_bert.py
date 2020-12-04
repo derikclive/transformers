@@ -220,8 +220,15 @@ class BertSelfAttention(nn.Module):
         self.attention_head_size = int(config.hidden_size / config.num_attention_heads)
         self.all_head_size = self.num_attention_heads * self.attention_head_size
 
+
+        #############################################################
+        self.edge_feat_dim = 32
+        self.num_edge_feats = 17
         self.query = nn.Linear(config.hidden_size, self.all_head_size)
-        self.key = nn.Linear(config.hidden_size, self.all_head_size)
+        self.key = nn.Linear(config.hidden_size + self.edge_feat_dim, self.all_head_size)
+        self.edge_layer = nn.Linear(self.num_edge_feats, self.edge_feat_dim)
+        #############################################################
+
         self.value = nn.Linear(config.hidden_size, self.all_head_size)
 
         self.dropout = nn.Dropout(config.attention_probs_dropout_prob)
@@ -230,10 +237,13 @@ class BertSelfAttention(nn.Module):
             self.max_position_embeddings = config.max_position_embeddings
             self.distance_embedding = nn.Embedding(2 * config.max_position_embeddings - 1, self.attention_head_size)
 
-    def transpose_for_scores(self, x):
+    def transpose_for_scores(self, x, expanded=False):
         new_x_shape = x.size()[:-1] + (self.num_attention_heads, self.attention_head_size)
         x = x.view(*new_x_shape)
-        return x.permute(0, 2, 1, 3)
+        if expanded:
+            return x.permute(0, 3, 1, 2, 4)
+        else:
+            return x.permute(0, 2, 1, 3)
 
     def forward(
         self,
@@ -243,8 +253,17 @@ class BertSelfAttention(nn.Module):
         encoder_hidden_states=None,
         encoder_attention_mask=None,
         output_attentions=False,
+        ########################################################
+        edge_features=None,
+        ########################################################
     ):
         mixed_query_layer = self.query(hidden_states)
+
+        ######################################################
+        edge_feat_layer = self.edge_layer(edge_features)
+        expanded_keys_inputs = hidden_states.unsqueeze(2).expand(-1, -1, hidden_states.shape[1], -1)
+        key_inputs = torch.cat([expanded_keys_inputs, edge_feat_layer], -1)
+        ######################################################
 
         # If this is instantiated as a cross-attention module, the keys
         # and values come from an encoder; the attention mask needs to be
@@ -254,15 +273,23 @@ class BertSelfAttention(nn.Module):
             mixed_value_layer = self.value(encoder_hidden_states)
             attention_mask = encoder_attention_mask
         else:
-            mixed_key_layer = self.key(hidden_states)
+            mixed_key_layer = self.key(key_inputs)
             mixed_value_layer = self.value(hidden_states)
 
         query_layer = self.transpose_for_scores(mixed_query_layer)
-        key_layer = self.transpose_for_scores(mixed_key_layer)
+        ########################################################################
+        # (bs, seq_len, seq_len, emb_dim) -> (bs, seq_len, seq_len, num_head, head_dim) -> (bs, num_heads, seq_len, seq_len, head_dim)
+        key_layer = self.transpose_for_scores(mixed_key_layer, expanded=True)
+        ########################################################################
         value_layer = self.transpose_for_scores(mixed_value_layer)
 
         # Take the dot product between "query" and "key" to get the raw attention scores.
-        attention_scores = torch.matmul(query_layer, key_layer.transpose(-1, -2))
+        # attention_scores = torch.matmul(query_layer, key_layer.transpose(-1, -2))
+
+        ###############################################################################
+        # key_layer - (bs, num_heads, seq_len, seq_len, head_dim) , query_layer = (bs, num_heads, seq_len, head_dim)
+        attention_scores = torch.sum(query_layer.unsqueeze(3) * key_layer, dim=-1)
+        ###############################################################################
 
         if self.position_embedding_type == "relative_key" or self.position_embedding_type == "relative_key_query":
             seq_length = hidden_states.size()[1]
