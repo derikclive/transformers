@@ -248,14 +248,14 @@ class BertSelfAttention(nn.Module):
     def forward(
         self,
         hidden_states,
+        ##############################################
+        edge_features=None,
+        ##############################################
         attention_mask=None,
         head_mask=None,
         encoder_hidden_states=None,
         encoder_attention_mask=None,
         output_attentions=False,
-        ########################################################
-        edge_features=None,
-        ########################################################
     ):
         mixed_query_layer = self.query(hidden_states)
 
@@ -375,6 +375,9 @@ class BertAttention(nn.Module):
     def forward(
         self,
         hidden_states,
+        ##############################################
+        edge_features=None,
+        ##############################################
         attention_mask=None,
         head_mask=None,
         encoder_hidden_states=None,
@@ -383,6 +386,7 @@ class BertAttention(nn.Module):
     ):
         self_outputs = self.self(
             hidden_states,
+            edge_features,
             attention_mask,
             head_mask,
             encoder_hidden_states,
@@ -440,6 +444,9 @@ class BertLayer(nn.Module):
     def forward(
         self,
         hidden_states,
+        ##############################################
+        edge_features=None,
+        ##############################################
         attention_mask=None,
         head_mask=None,
         encoder_hidden_states=None,
@@ -448,6 +455,7 @@ class BertLayer(nn.Module):
     ):
         self_attention_outputs = self.attention(
             hidden_states,
+            edge_features,
             attention_mask,
             head_mask,
             output_attentions=output_attentions,
@@ -491,6 +499,9 @@ class BertEncoder(nn.Module):
     def forward(
         self,
         hidden_states,
+        ##############################################
+        edge_features=None,
+        ##############################################
         attention_mask=None,
         head_mask=None,
         encoder_hidden_states=None,
@@ -527,6 +538,7 @@ class BertEncoder(nn.Module):
             else:
                 layer_outputs = layer_module(
                     hidden_states,
+                    edge_features,
                     attention_mask,
                     layer_head_mask,
                     encoder_hidden_states,
