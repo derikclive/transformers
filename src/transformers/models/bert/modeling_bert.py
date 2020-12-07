@@ -223,7 +223,7 @@ class BertSelfAttention(nn.Module):
 
         #############################################################
         self.edge_feat_dim = 32
-        self.num_edge_feats = 17
+        self.num_edge_feats = 12
         self.query = nn.Linear(config.hidden_size, self.all_head_size)
         self.key = nn.Linear(config.hidden_size + self.edge_feat_dim, self.all_head_size)
         self.edge_layer = nn.Linear(self.num_edge_feats, self.edge_feat_dim)
