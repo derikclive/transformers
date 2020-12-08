@@ -205,7 +205,7 @@ class BertEmbeddings(nn.Module):
 
 
 class BertSelfAttention(nn.Module):
-    def __init__(self, config, edge_feats=False):
+    def __init__(self, config, edge_mode="none", concat_mode=True):
         super().__init__()
         if config.hidden_size % config.num_attention_heads != 0 and not hasattr(config, "embedding_size"):
             raise ValueError(
@@ -217,28 +217,43 @@ class BertSelfAttention(nn.Module):
         self.attention_head_size = int(config.hidden_size / config.num_attention_heads)
         self.all_head_size = self.num_attention_heads * self.attention_head_size
 
-        if edge_feats == True:
-            #############################################################
-            # Concat
-            # self.edge_feat_dim = 32
-            # Add
+        self.edge_mode = edge_mode
+        self.concat_mode = concat_mode
+
+        self.num_edge_feats = 12
+
+        self.query = nn.Linear(config.hidden_size, self.all_head_size)
+
+        if concat_mode:
+            self.edge_feat_dim = 32
+        else:
             self.edge_feat_dim = config.hidden_size
 
-            self.num_edge_feats = 12
-            self.query = nn.Linear(config.hidden_size, self.all_head_size)
-
+        if edge_mode == 'key' or edge_mode == 'both':
+            #############################################################
             # Concat
-            # self.key = nn.Linear(config.hidden_size + self.edge_feat_dim, self.all_head_size)
+            if concat_mode:
+                self.key = nn.Linear(config.hidden_size + self.edge_feat_dim, self.all_head_size)
             # Add
-            self.key = nn.Linear(config.hidden_size, self.all_head_size)
+            else:
+                self.key = nn.Linear(config.hidden_size, self.all_head_size)
 
-            self.edge_layer = nn.Linear(self.num_edge_feats, self.edge_feat_dim)
+            self.key_edge_layer = nn.Linear(self.num_edge_feats, self.edge_feat_dim)
             #############################################################
         else:
-            self.query = nn.Linear(config.hidden_size, self.all_head_size)
             self.key = nn.Linear(config.hidden_size, self.all_head_size)
-        
-        self.value = nn.Linear(config.hidden_size, self.all_head_size)
+
+        if edge_mode == 'value' or edge_mode == 'both':
+            # Concat
+            if concat_mode:
+                self.value = nn.Linear(config.hidden_size + self.edge_feat_dim, self.all_head_size)
+            # Add
+            else:
+                self.value = nn.Linear(config.hidden_size, self.all_head_size)
+
+            self.value_edge_layer = nn.Linear(self.num_edge_feats, self.edge_feat_dim)
+        else:
+            self.value = nn.Linear(config.hidden_size, self.all_head_size)
 
         self.dropout = nn.Dropout(config.attention_probs_dropout_prob)
 
@@ -266,13 +281,23 @@ class BertSelfAttention(nn.Module):
     ):
         mixed_query_layer = self.query(hidden_states)
         ######################################################
-        if edge_features != None:
-            edge_feat_layer = self.edge_layer(edge_features)
-            expanded_keys_inputs = hidden_states.unsqueeze(2).expand(-1, -1, hidden_states.shape[1], -1)
-            # Concat
-            # key_inputs = torch.cat([expanded_keys_inputs, edge_feat_layer], -1)
-            # Add
-            key_inputs = expanded_keys_inputs + edge_feat_layer
+        if self.edge_mode == 'key' or self.edge_mode == 'both':
+            edge_feat_layer = self.key_edge_layer(edge_features)
+            expanded_inputs = hidden_states.unsqueeze(1).expand(-1, hidden_states.shape[1], -1, -1)
+            if self.concat_mode:
+                key_inputs = torch.cat([expanded_inputs, edge_feat_layer], -1)
+            else:
+                key_inputs = expanded_inputs + edge_feat_layer
+        ######################################################
+
+        ######################################################
+        if self.edge_mode == 'value' or self.edge_mode == 'both':
+            edge_feat_layer = self.value_edge_layer(edge_features)
+            expanded_inputs = hidden_states.unsqueeze(1).expand(-1, hidden_states.shape[1], -1, -1)
+            if self.concat_mode:
+                value_inputs = torch.cat([expanded_inputs, edge_feat_layer], -1)
+            else:
+                value_inputs = expanded_inputs + edge_feat_layer
         ######################################################
 
         # If this is instantiated as a cross-attention module, the keys
@@ -283,33 +308,45 @@ class BertSelfAttention(nn.Module):
             mixed_value_layer = self.value(encoder_hidden_states)
             attention_mask = encoder_attention_mask
         else:
-            if edge_features != None:
+            ######################################################
+            if self.edge_mode == 'key' or self.edge_mode == 'both':
                 mixed_key_layer = self.key(key_inputs)
-                mixed_value_layer = self.value(hidden_states)
             else:
                 mixed_key_layer = self.key(hidden_states)
+
+            if self.edge_mode == 'value' or self.edge_mode == 'both':
+                mixed_value_layer = self.value(value_inputs)
+            else:
                 mixed_value_layer = self.value(hidden_states)
+            ######################################################
 
         query_layer = self.transpose_for_scores(mixed_query_layer)
 
         ########################################################################
-        if edge_features != None:
-            # (bs, seq_len, seq_len, emb_dim) -> (bs, seq_len, seq_len, num_head, head_dim) -> (bs, num_heads, seq_len, seq_len, head_dim)
+        if self.edge_mode == 'key' or self.edge_mode == 'both':
+            # (bs, seq_len, seq_len, emb_dim) -> (bs, seq_len, seq_len, num_head, head_dim) ->
+            # (bs, num_heads, seq_len, seq_len, head_dim)
             key_layer = self.transpose_for_scores(mixed_key_layer, expanded=True)
         else:
             key_layer = self.transpose_for_scores(mixed_key_layer)
-        ########################################################################
-        value_layer = self.transpose_for_scores(mixed_value_layer)
 
-        # Take the dot product between "query" and "key" to get the raw attention scores.
-        if edge_features == None:
-            attention_scores = torch.matmul(query_layer, key_layer.transpose(-1, -2))
-            attention_scores = attention_scores / math.sqrt(self.attention_head_size)
+        if self.edge_mode == 'value' or self.edge_mode == 'both':
+            # (bs, seq_len, seq_len, emb_dim) -> (bs, seq_len, seq_len, num_head, head_dim) ->
+            # (bs, num_heads, seq_len, seq_len, head_dim)
+            value_layer = self.transpose_for_scores(mixed_value_layer, expanded=True)
         else:
-            ###############################################################################
+            value_layer = self.transpose_for_scores(mixed_value_layer)
+        ########################################################################
+
+        ###############################################################################
+        if self.edge_mode == 'key' or self.edge_mode == 'both':
             # key_layer - (bs, num_heads, seq_len, seq_len, head_dim) , query_layer = (bs, num_heads, seq_len, head_dim)
             attention_scores = torch.sum(query_layer.unsqueeze(3) * key_layer, dim=-1)
-            ###############################################################################
+        ###############################################################################
+        else:
+            # Take the dot product between "query" and "key" to get the raw attention scores.
+            attention_scores = torch.matmul(query_layer, key_layer.transpose(-1, -2))
+            attention_scores = attention_scores / math.sqrt(self.attention_head_size)
 
         if attention_mask is not None:
             # Apply the attention mask is (precomputed for all layers in BertModel forward() function)
@@ -326,7 +363,12 @@ class BertSelfAttention(nn.Module):
         if head_mask is not None:
             attention_probs = attention_probs * head_mask
 
-        context_layer = torch.matmul(attention_probs, value_layer)
+        ###############################################################################
+        if self.edge_mode == 'value' or self.edge_mode == 'both':
+            context_layer = torch.sum(attention_probs.unsqueeze(-1) * value_layer, dim=3)
+        ###############################################################################
+        else:
+            context_layer = torch.matmul(attention_probs, value_layer)
 
         context_layer = context_layer.permute(0, 2, 1, 3).contiguous()
         new_context_layer_shape = context_layer.size()[:-2] + (self.all_head_size,)
@@ -351,9 +393,9 @@ class BertSelfOutput(nn.Module):
 
 
 class BertAttention(nn.Module):
-    def __init__(self, config, edge_feats=False):
+    def __init__(self, config, edge_mode="none", concat_mode=True):
         super().__init__()
-        self.self = BertSelfAttention(config, edge_feats)
+        self.self = BertSelfAttention(config, edge_mode, concat_mode)
         self.output = BertSelfOutput(config)
         self.pruned_heads = set()
 
@@ -431,11 +473,11 @@ class BertOutput(nn.Module):
 
 
 class BertLayer(nn.Module):
-    def __init__(self, config, edge_feats=False):
+    def __init__(self, config, edge_mode="none", concat_mode=True):
         super().__init__()
         self.chunk_size_feed_forward = config.chunk_size_feed_forward
         self.seq_len_dim = 1
-        self.attention = BertAttention(config, edge_feats)
+        self.attention = BertAttention(config, edge_mode, concat_mode)
         self.is_decoder = config.is_decoder
         self.add_cross_attention = config.add_cross_attention
         if self.add_cross_attention:
@@ -494,10 +536,10 @@ class BertLayer(nn.Module):
 
 
 class BertEncoder(nn.Module):
-    def __init__(self, config, edge_feats=False):
+    def __init__(self, config, , edge_mode="none", concat_mode=True):
         super().__init__()
         self.config = config
-        self.layer = nn.ModuleList([BertLayer(config, edge_feats) for _ in range(config.num_hidden_layers)])
+        self.layer = nn.ModuleList([BertLayer(config, edge_mode, concat_mode) for _ in range(config.num_hidden_layers)])
 
     def forward(
         self,
