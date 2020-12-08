@@ -219,10 +219,19 @@ class BertSelfAttention(nn.Module):
 
         if edge_feats == True:
             #############################################################
-            self.edge_feat_dim = 32
+            # Concat
+            # self.edge_feat_dim = 32
+            # Add
+            self.edge_feat_dim = config.hidden_size
+
             self.num_edge_feats = 12
             self.query = nn.Linear(config.hidden_size, self.all_head_size)
-            self.key = nn.Linear(config.hidden_size + self.edge_feat_dim, self.all_head_size)
+
+            # Concat
+            # self.key = nn.Linear(config.hidden_size + self.edge_feat_dim, self.all_head_size)
+            # Add
+            self.key = nn.Linear(config.hidden_size, self.all_head_size)
+
             self.edge_layer = nn.Linear(self.num_edge_feats, self.edge_feat_dim)
             #############################################################
         else:
@@ -260,7 +269,10 @@ class BertSelfAttention(nn.Module):
         if edge_features != None:
             edge_feat_layer = self.edge_layer(edge_features)
             expanded_keys_inputs = hidden_states.unsqueeze(2).expand(-1, -1, hidden_states.shape[1], -1)
-            key_inputs = torch.cat([expanded_keys_inputs, edge_feat_layer], -1)
+            # Concat
+            # key_inputs = torch.cat([expanded_keys_inputs, edge_feat_layer], -1)
+            # Add
+            key_inputs = expanded_keys_inputs + edge_feat_layer
         ######################################################
 
         # If this is instantiated as a cross-attention module, the keys
