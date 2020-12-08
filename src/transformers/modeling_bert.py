@@ -536,7 +536,7 @@ class BertLayer(nn.Module):
 
 
 class BertEncoder(nn.Module):
-    def __init__(self, config, , edge_mode="none", concat_mode=True):
+    def __init__(self, config, edge_mode="none", concat_mode=True):
         super().__init__()
         self.config = config
         self.layer = nn.ModuleList([BertLayer(config, edge_mode, concat_mode) for _ in range(config.num_hidden_layers)])
